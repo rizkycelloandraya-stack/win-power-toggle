@@ -1,0 +1,22 @@
+{
+  "batteryMode": {
+    "brightness": 30,
+    "refreshRate": 60,
+    "maxCpuState": 50,
+    "forceBatterySaver": true,
+    "appsToKill": [
+      "Discord",
+      "Steam",
+      "EpicGamesLauncher",
+      "RiotClientServices"
+    ]
+  },
+  "gamingMode": {
+    "brightness": 100,
+    "refreshRate": 144,
+    "maxCpuState": 100,
+    "appsToLaunch": [
+      "C:\\Program Files (x86)\\Steam\\steam.exe"
+    ]
+  }
+}
