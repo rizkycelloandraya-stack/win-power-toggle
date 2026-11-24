@@ -75,6 +75,13 @@ $script:ActivePs = $null
 $script:ActiveHandle = $null
 $script:ActiveCallback = $null
 $script:PollTimer = $null
+$script:LiveStatusRunspace = $null
+$script:LiveStatusPs = $null
+$script:LiveStatusHandle = $null
+$script:LivePollTimer = $null
+$script:LiveCheckTimer = $null
+$script:PowerModeHandler = $null
+$script:DisplaySettingsHandler = $null
 $script:NotifyIcon = $null
 
 $xaml = Get-AppWindowXaml
@@ -94,14 +101,21 @@ $script:TxtNoticeMessage   = $script:Window.FindName('TxtNoticeMessage')
 
 $script:BtnBatteryMode     = $script:Window.FindName('BtnBatteryMode')
 $script:TxtBatterySummary  = $script:Window.FindName('TxtBatterySummary')
+$script:BtnNormalMode      = $script:Window.FindName('BtnNormalMode')
+$script:TxtNormalSummary   = $script:Window.FindName('TxtNormalSummary')
 $script:BtnGamingMode      = $script:Window.FindName('BtnGamingMode')
 $script:TxtGamingSummary   = $script:Window.FindName('TxtGamingSummary')
 
 $script:BtnRefreshStatus   = $script:Window.FindName('BtnRefreshStatus')
+$script:TxtStatusUpdated   = $script:Window.FindName('TxtStatusUpdated')
 $script:TxtStatusPower     = $script:Window.FindName('TxtStatusPower')
 $script:TxtStatusOverlay   = $script:Window.FindName('TxtStatusOverlay')
 $script:TxtStatusCpu       = $script:Window.FindName('TxtStatusCpu')
 $script:TxtStatusDisplay   = $script:Window.FindName('TxtStatusDisplay')
+$script:TxtSpecCpu         = $script:Window.FindName('TxtSpecCpu')
+$script:TxtSpecGpu         = $script:Window.FindName('TxtSpecGpu')
+$script:TxtSpecRam         = $script:Window.FindName('TxtSpecRam')
+$script:TxtSpecOs          = $script:Window.FindName('TxtSpecOs')
 $script:TxtLastAction      = $script:Window.FindName('TxtLastAction')
 
 $script:TxtConfigPath      = $script:Window.FindName('TxtConfigPath')
@@ -118,6 +132,12 @@ $script:TxtEmptyKillList   = $script:Window.FindName('TxtEmptyKillList')
 $script:TxtAddKillApp      = $script:Window.FindName('TxtAddKillApp')
 $script:BtnAddKillApp      = $script:Window.FindName('BtnAddKillApp')
 $script:BtnRemoveKillApp   = $script:Window.FindName('BtnRemoveKillApp')
+
+$script:SliderNormalCpu    = $script:Window.FindName('SliderNormalCpu')
+$script:TxtNormalCpuVal    = $script:Window.FindName('TxtNormalCpuVal')
+$script:SliderNormalBright = $script:Window.FindName('SliderNormalBright')
+$script:TxtNormalBrightVal = $script:Window.FindName('TxtNormalBrightVal')
+$script:CboNormalRefresh   = $script:Window.FindName('CboNormalRefresh')
 
 $script:SliderGameCpu      = $script:Window.FindName('SliderGameCpu')
 $script:TxtGameCpuVal      = $script:Window.FindName('TxtGameCpuVal')
@@ -165,12 +185,14 @@ function Set-BusyState {
 
     $script:IsBusy = $Busy
     $script:BtnBatteryMode.IsEnabled = (-not $Busy)
+    $script:BtnNormalMode.IsEnabled = (-not $Busy)
     $script:BtnGamingMode.IsEnabled = (-not $Busy)
     $script:BtnRefreshStatus.IsEnabled = (-not $Busy)
     $script:BtnSaveConfig.IsEnabled = (-not $Busy)
     $script:BtnReloadConfig.IsEnabled = (-not $Busy)
 
     if ($null -ne $script:TrayBatteryItem) { $script:TrayBatteryItem.Enabled = (-not $Busy) }
+    if ($null -ne $script:TrayNormalItem)  { $script:TrayNormalItem.Enabled = (-not $Busy) }
     if ($null -ne $script:TrayGamingItem)  { $script:TrayGamingItem.Enabled = (-not $Busy) }
 
     if ($Busy) {
@@ -259,6 +281,11 @@ function Get-FormConfigObject {
             forceBatterySaver = $forceSaver
             appsToKill        = $killItems
         }
+        normalMode = [PSCustomObject]@{
+            brightness  = [int][Math]::Round($script:SliderNormalBright.Value)
+            refreshRate = if ($null -ne $script:CboNormalRefresh.SelectedItem) { "$($script:CboNormalRefresh.SelectedItem)" } else { 144 }
+            maxCpuState = [int][Math]::Round($script:SliderNormalCpu.Value)
+        }
         gamingMode = [PSCustomObject]@{
             brightness   = [int][Math]::Round($script:SliderGameBright.Value)
             refreshRate  = if ($null -ne $script:CboGameRefresh.SelectedItem) { "$($script:CboGameRefresh.SelectedItem)" } else { 144 }
@@ -271,6 +298,9 @@ function Get-FormConfigObject {
 function Update-ModeSummaries {
     if ($null -eq $script:CurrentConfig) { return }
     $script:TxtBatterySummary.Text = Format-ProfileCardSummary -Profile $script:CurrentConfig.batteryMode -Mode 'battery'
+    if ($null -ne $script:CurrentConfig.PSObject.Properties['normalMode'] -and $null -ne $script:CurrentConfig.normalMode) {
+        $script:TxtNormalSummary.Text = Format-ProfileCardSummary -Profile $script:CurrentConfig.normalMode -Mode 'normal'
+    }
     $script:TxtGamingSummary.Text  = Format-ProfileCardSummary -Profile $script:CurrentConfig.gamingMode -Mode 'gaming'
 }
 
@@ -284,6 +314,8 @@ function Load-ConfigIntoForm {
 
         $batCpu = if ($null -ne $cfg.batteryMode.maxCpuState) { [int]$cfg.batteryMode.maxCpuState } else { 50 }
         $batBright = if ($null -ne $cfg.batteryMode.brightness) { [int]$cfg.batteryMode.brightness } else { 30 }
+        $normalCpu = if ($null -ne $cfg.normalMode.maxCpuState) { [int]$cfg.normalMode.maxCpuState } else { 100 }
+        $normalBright = if ($null -ne $cfg.normalMode.brightness) { [int]$cfg.normalMode.brightness } else { 70 }
         $gameCpu = if ($null -ne $cfg.gamingMode.maxCpuState) { [int]$cfg.gamingMode.maxCpuState } else { 100 }
         $gameBright = if ($null -ne $cfg.gamingMode.brightness) { [int]$cfg.gamingMode.brightness } else { 100 }
 
@@ -292,12 +324,18 @@ function Load-ConfigIntoForm {
         $script:SliderBatBright.Value = $batBright
         $script:TxtBatBrightVal.Text = "${batBright}%"
 
+        $script:SliderNormalCpu.Value = $normalCpu
+        $script:TxtNormalCpuVal.Text = "${normalCpu}%"
+        $script:SliderNormalBright.Value = $normalBright
+        $script:TxtNormalBrightVal.Text = "${normalBright}%"
+
         $script:SliderGameCpu.Value = $gameCpu
         $script:TxtGameCpuVal.Text = "${gameCpu}%"
         $script:SliderGameBright.Value = $gameBright
         $script:TxtGameBrightVal.Text = "${gameBright}%"
 
         Populate-RefreshCombo -ComboBox $script:CboBatRefresh -SupportedRates $script:SupportedRates -SelectedValue $cfg.batteryMode.refreshRate
+        Populate-RefreshCombo -ComboBox $script:CboNormalRefresh -SupportedRates $script:SupportedRates -SelectedValue $cfg.normalMode.refreshRate
         Populate-RefreshCombo -ComboBox $script:CboGameRefresh -SupportedRates $script:SupportedRates -SelectedValue $cfg.gamingMode.refreshRate
 
         $script:LstAppsToKill.Items.Clear()
@@ -355,14 +393,185 @@ function Apply-StatusToUi {
         $script:NotifyIcon.Text = $tip
     }
 
+    if ($null -ne $script:TxtStatusUpdated) {
+        $script:TxtStatusUpdated.Text = "Live (2s) | Updated $(Get-Date -Format 'HH:mm:ss')"
+    }
+
     if ($null -ne $StatusObj.SupportedRefreshRatesHz -and $StatusObj.SupportedRefreshRatesHz.Count -gt 0) {
-        $script:SupportedRates = [int[]]$StatusObj.SupportedRefreshRatesHz
-        $batSel = $script:CboBatRefresh.SelectedItem
-        $gameSel = $script:CboGameRefresh.SelectedItem
-        $script:SuppressFormSync = $true
-        Populate-RefreshCombo -ComboBox $script:CboBatRefresh -SupportedRates $script:SupportedRates -SelectedValue $batSel
-        Populate-RefreshCombo -ComboBox $script:CboGameRefresh -SupportedRates $script:SupportedRates -SelectedValue $gameSel
-        $script:SuppressFormSync = $false
+        $incomingRates = [int[]]$StatusObj.SupportedRefreshRatesHz
+        if (Test-RefreshRatesChanged -Current $script:SupportedRates -Incoming $incomingRates) {
+            $script:SupportedRates = $incomingRates
+            $batSel = $script:CboBatRefresh.SelectedItem
+            $normalSel = $script:CboNormalRefresh.SelectedItem
+            $gameSel = $script:CboGameRefresh.SelectedItem
+            $script:SuppressFormSync = $true
+            Populate-RefreshCombo -ComboBox $script:CboBatRefresh -SupportedRates $script:SupportedRates -SelectedValue $batSel
+            Populate-RefreshCombo -ComboBox $script:CboNormalRefresh -SupportedRates $script:SupportedRates -SelectedValue $normalSel
+            Populate-RefreshCombo -ComboBox $script:CboGameRefresh -SupportedRates $script:SupportedRates -SelectedValue $gameSel
+            $script:SuppressFormSync = $false
+        }
+    }
+}
+
+function Apply-SpecsToUi {
+    param($SpecsObj)
+
+    if ($null -eq $SpecsObj) {
+        $script:TxtSpecCpu.Text = 'Unavailable'
+        $script:TxtSpecGpu.Text = 'Unavailable'
+        $script:TxtSpecRam.Text = 'Unavailable'
+        $script:TxtSpecOs.Text  = 'Unavailable'
+        return
+    }
+
+    $script:TxtSpecCpu.Text = $SpecsObj.Cpu
+    $script:TxtSpecGpu.Text = $SpecsObj.Gpu
+    $script:TxtSpecRam.Text = $SpecsObj.Memory
+    $script:TxtSpecOs.Text  = $SpecsObj.Os
+}
+
+function Load-ComputerSpecsAsync {
+    $specsPs = [PowerShell]::Create()
+    [void]$specsPs.AddScript("param(`$p); . `$p; Get-ComputerSpecs").AddArgument($script:SwitchModePath)
+    $specsHandle = $specsPs.BeginInvoke()
+
+    $specsTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $specsTimer.Interval = [TimeSpan]::FromMilliseconds(80)
+    $specsTimer.Tag = [PSCustomObject]@{ Ps = $specsPs; Handle = $specsHandle }
+    $specsTimer.Add_Tick({
+        param($sender, $e)
+        $state = $sender.Tag
+        if ($null -eq $state -or -not $state.Handle.IsCompleted) { return }
+
+        $sender.Stop()
+        try {
+            $res = $state.Ps.EndInvoke($state.Handle)
+            if ($null -ne $res -and $res.Count -gt 0) {
+                Apply-SpecsToUi -SpecsObj $res[$res.Count - 1]
+            }
+            else {
+                Apply-SpecsToUi -SpecsObj $null
+            }
+        }
+        catch {
+            Apply-SpecsToUi -SpecsObj $null
+        }
+        finally {
+            try { $state.Ps.Dispose() } catch {}
+        }
+    })
+    $specsTimer.Start()
+}
+
+function Initialize-LiveStatusRunspace {
+    if ($null -ne $script:LiveStatusRunspace) { return }
+    try {
+        $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+        $rs.ApartmentState = [System.Threading.ApartmentState]::MTA
+        $rs.Open()
+        $initPs = [PowerShell]::Create()
+        $initPs.Runspace = $rs
+        [void]$initPs.AddScript("param(`$p); . `$p").AddArgument($script:SwitchModePath)
+        [void]$initPs.Invoke()
+        $initPs.Dispose()
+        $script:LiveStatusRunspace = $rs
+    }
+    catch {
+        $script:LiveStatusRunspace = $null
+    }
+}
+
+function Request-LiveStatusTick {
+    param([switch]$Force)
+
+    if ($script:IsBusy -or $null -ne $script:LiveStatusHandle) { return }
+    if (-not $Force) {
+        if (-not $script:Window.IsVisible -or $script:Window.WindowState -eq 'Minimized') {
+            return
+        }
+    }
+
+    Initialize-LiveStatusRunspace
+    if ($null -eq $script:LiveStatusRunspace) { return }
+
+    try {
+        $ps = [PowerShell]::Create()
+        $ps.Runspace = $script:LiveStatusRunspace
+        [void]$ps.AddScript('Get-SystemPowerStatus')
+        $script:LiveStatusPs = $ps
+        $script:LiveStatusHandle = $ps.BeginInvoke()
+
+        if ($null -eq $script:LiveCheckTimer) {
+            $script:LiveCheckTimer = New-Object System.Windows.Threading.DispatcherTimer
+            $script:LiveCheckTimer.Interval = [TimeSpan]::FromMilliseconds(50)
+            $script:LiveCheckTimer.Add_Tick({
+                if ($null -eq $script:LiveStatusHandle -or -not $script:LiveStatusHandle.IsCompleted) {
+                    return
+                }
+
+                $script:LiveCheckTimer.Stop()
+                $psInst = $script:LiveStatusPs
+                $handle = $script:LiveStatusHandle
+                $script:LiveStatusPs = $null
+                $script:LiveStatusHandle = $null
+
+                try {
+                    $results = $psInst.EndInvoke($handle)
+                    if ($null -ne $results -and $results.Count -gt 0 -and (-not $script:IsBusy)) {
+                        $latest = $results[$results.Count - 1]
+                        if ($null -ne $latest) {
+                            Apply-StatusToUi -StatusObj $latest
+                        }
+                    }
+                }
+                catch {
+                    # Silent live poll ignores transient query hiccups; manual Refresh surfaces errors
+                }
+                finally {
+                    try { $psInst.Dispose() } catch {}
+                }
+            })
+        }
+
+        $script:LiveCheckTimer.Start()
+    }
+    catch {
+        $script:LiveStatusHandle = $null
+        if ($null -ne $script:LiveStatusPs) {
+            try { $script:LiveStatusPs.Dispose() } catch {}
+            $script:LiveStatusPs = $null
+        }
+    }
+}
+
+function Start-LiveStatusMonitor {
+    if ($null -eq $script:LivePollTimer) {
+        $script:LivePollTimer = New-Object System.Windows.Threading.DispatcherTimer
+        $script:LivePollTimer.Interval = [TimeSpan]::FromSeconds(2)
+        $script:LivePollTimer.Add_Tick({
+            Request-LiveStatusTick
+        })
+    }
+    $script:LivePollTimer.Start()
+
+    if ($null -eq $script:PowerModeHandler) {
+        $script:PowerModeHandler = [Microsoft.Win32.PowerModeChangedEventHandler]{
+            param($sender, $e)
+            if ($null -ne $script:Window -and $null -ne $script:Window.Dispatcher) {
+                [void]$script:Window.Dispatcher.BeginInvoke([Action]{ Request-LiveStatusTick -Force })
+            }
+        }
+        try { [Microsoft.Win32.SystemEvents]::add_PowerModeChanged($script:PowerModeHandler) } catch {}
+    }
+
+    if ($null -eq $script:DisplaySettingsHandler) {
+        $script:DisplaySettingsHandler = [System.EventHandler]{
+            param($sender, $e)
+            if ($null -ne $script:Window -and $null -ne $script:Window.Dispatcher) {
+                [void]$script:Window.Dispatcher.BeginInvoke([Action]{ Request-LiveStatusTick -Force })
+            }
+        }
+        try { [Microsoft.Win32.SystemEvents]::add_DisplaySettingsChanged($script:DisplaySettingsHandler) } catch {}
     }
 }
 
@@ -469,9 +678,13 @@ function Request-StatusRefresh {
 }
 
 function Request-ModeSwitch {
-    param([ValidateSet('battery', 'gaming')][string]$TargetMode)
+    param([ValidateSet('battery', 'normal', 'gaming')][string]$TargetMode)
 
-    $label = if ($TargetMode -eq 'battery') { 'Battery Saver' } else { 'Gaming Performance' }
+    $label = switch ($TargetMode) {
+        'battery' { 'Battery Saver' }
+        'normal'  { 'Normal (Balanced)' }
+        default   { 'Gaming Performance' }
+    }
     Start-BackgroundOperation -LoadingMessage "Working: applying $label profile..." -OperationType 'switch' -TargetMode $TargetMode -OnCompleted {
         param($payload)
         if ($null -ne $payload) {
@@ -492,6 +705,7 @@ function Restore-MainWindow {
         $script:Window.WindowState = 'Normal'
     }
     $script:Window.Activate() | Out-Null
+    Request-LiveStatusTick -Force
 }
 
 # Setup System Tray NotifyIcon
@@ -507,6 +721,9 @@ $trayOpenItem.Add_Click({ Restore-MainWindow })
 
 $script:TrayBatteryItem = $trayMenu.Items.Add('Switch to Battery Saver')
 $script:TrayBatteryItem.Add_Click({ Request-ModeSwitch -TargetMode 'battery' })
+
+$script:TrayNormalItem = $trayMenu.Items.Add('Switch to Normal (Balanced)')
+$script:TrayNormalItem.Add_Click({ Request-ModeSwitch -TargetMode 'normal' })
 
 $script:TrayGamingItem = $trayMenu.Items.Add('Switch to Gaming Performance')
 $script:TrayGamingItem.Add_Click({ Request-ModeSwitch -TargetMode 'gaming' })
@@ -551,6 +768,10 @@ $script:BtnBatteryMode.Add_Click({
     Request-ModeSwitch -TargetMode 'battery'
 })
 
+$script:BtnNormalMode.Add_Click({
+    Request-ModeSwitch -TargetMode 'normal'
+})
+
 $script:BtnGamingMode.Add_Click({
     Request-ModeSwitch -TargetMode 'gaming'
 })
@@ -577,6 +798,24 @@ $script:SliderBatBright.Add_ValueChanged({
     }
 })
 
+$script:SliderNormalCpu.Add_ValueChanged({
+    $val = [int][Math]::Round($script:SliderNormalCpu.Value)
+    $script:TxtNormalCpuVal.Text = "${val}%"
+    if (-not $script:SuppressFormSync) {
+        $script:CurrentConfig = Get-FormConfigObject
+        Update-ModeSummaries
+    }
+})
+
+$script:SliderNormalBright.Add_ValueChanged({
+    $val = [int][Math]::Round($script:SliderNormalBright.Value)
+    $script:TxtNormalBrightVal.Text = "${val}%"
+    if (-not $script:SuppressFormSync) {
+        $script:CurrentConfig = Get-FormConfigObject
+        Update-ModeSummaries
+    }
+})
+
 $script:SliderGameCpu.Add_ValueChanged({
     $val = [int][Math]::Round($script:SliderGameCpu.Value)
     $script:TxtGameCpuVal.Text = "${val}%"
@@ -596,6 +835,13 @@ $script:SliderGameBright.Add_ValueChanged({
 })
 
 $script:CboBatRefresh.Add_SelectionChanged({
+    if (-not $script:SuppressFormSync) {
+        $script:CurrentConfig = Get-FormConfigObject
+        Update-ModeSummaries
+    }
+})
+
+$script:CboNormalRefresh.Add_SelectionChanged({
     if (-not $script:SuppressFormSync) {
         $script:CurrentConfig = Get-FormConfigObject
         Update-ModeSummaries
@@ -712,14 +958,34 @@ $script:BtnReloadConfig.Add_Click({
 $script:Window.Add_Loaded({
     Load-ConfigIntoForm
     Request-StatusRefresh
+    Load-ComputerSpecsAsync
+    Start-LiveStatusMonitor
 })
 
 $script:Window.Add_Closed({
+    if ($null -ne $script:LivePollTimer) {
+        try { $script:LivePollTimer.Stop() } catch {}
+    }
+    if ($null -ne $script:LiveCheckTimer) {
+        try { $script:LiveCheckTimer.Stop() } catch {}
+    }
     if ($null -ne $script:PollTimer) {
         try { $script:PollTimer.Stop() } catch {}
     }
+    if ($null -ne $script:PowerModeHandler) {
+        try { [Microsoft.Win32.SystemEvents]::remove_PowerModeChanged($script:PowerModeHandler) } catch {}
+    }
+    if ($null -ne $script:DisplaySettingsHandler) {
+        try { [Microsoft.Win32.SystemEvents]::remove_DisplaySettingsChanged($script:DisplaySettingsHandler) } catch {}
+    }
     if ($null -ne $script:ActivePs) {
         try { $script:ActivePs.Dispose() } catch {}
+    }
+    if ($null -ne $script:LiveStatusPs) {
+        try { $script:LiveStatusPs.Dispose() } catch {}
+    }
+    if ($null -ne $script:LiveStatusRunspace) {
+        try { $script:LiveStatusRunspace.Close(); $script:LiveStatusRunspace.Dispose() } catch {}
     }
     if ($null -ne $script:NotifyIcon) {
         try {
@@ -734,6 +1000,8 @@ Apply-AppTheme -ThemeName $script:CurrentTheme
 if ($StartMinimized) {
     Load-ConfigIntoForm
     Request-StatusRefresh
+    Load-ComputerSpecsAsync
+    Start-LiveStatusMonitor
     $script:Window.ShowInTaskbar = $true
     $app = New-Object System.Windows.Application
     $app.ShutdownMode = [System.Windows.ShutdownMode]::OnExplicitShutdown

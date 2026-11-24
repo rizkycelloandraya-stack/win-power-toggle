@@ -39,6 +39,30 @@ Describe 'Run-Hidden.vbs' {
             (Get-Content -LiteralPath $marker -Raw).Trim() | Should Be '-Mode|battery'
         }
 
+        It 'translates shorthand normal mode argument to -Mode normal' {
+            Test-Path -LiteralPath $vbsPath | Should Be $true
+            $sandbox = Join-Path $TestDrive 'Normal Mode Sandbox'
+            New-Item -ItemType Directory -Path $sandbox -Force | Out-Null
+
+            $marker = Join-Path $sandbox 'captured-normal.txt'
+            $stubScript = Join-Path $sandbox 'Switch-Mode.ps1'
+            $copiedVbs = Join-Path $sandbox 'Run-Hidden.vbs'
+
+            Copy-Item -LiteralPath $vbsPath -Destination $copiedVbs -Force
+            Set-Content -LiteralPath $stubScript -Value "param([Parameter(ValueFromRemainingArguments=`$true)][string[]]`$AllArgs)`n(`$AllArgs -join '|') | Set-Content -LiteralPath '$marker' -Encoding UTF8" -Encoding UTF8
+
+            & cscript.exe //Nologo $copiedVbs normal
+            $LASTEXITCODE | Should Be 0
+
+            $deadline = (Get-Date).AddSeconds(5)
+            while (-not (Test-Path -LiteralPath $marker) -and (Get-Date) -lt $deadline) {
+                Start-Sleep -Milliseconds 100
+            }
+
+            Test-Path -LiteralPath $marker | Should Be $true
+            (Get-Content -LiteralPath $marker -Raw).Trim() | Should Be '-Mode|normal'
+        }
+
         It 'forwards explicit flags including quoted paths with spaces' {
             Test-Path -LiteralPath $vbsPath | Should Be $true
             $sandbox = Join-Path $TestDrive 'Second Sandbox'

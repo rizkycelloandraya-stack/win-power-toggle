@@ -21,10 +21,12 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('battery', 'gaming')]
+    [ValidateSet('battery', 'normal', 'gaming')]
     [string]$Mode,
 
     [switch]$Status,
+
+    [switch]$Specs,
 
     [string]$ConfigPath = '',
 
@@ -63,7 +65,25 @@ namespace WinPowerToggle {
         public string Guid { get; set; }
     }
 
+    public class SystemPowerNativeResult {
+        public int AcLineStatus { get; set; }
+        public int BatteryFlag { get; set; }
+        public int BatteryLifePercent { get; set; }
+        public bool HasBattery { get; set; }
+        public bool IsCharging { get; set; }
+    }
+
     public static class PowerOverlayNative {
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SYSTEM_POWER_STATUS {
+            public byte ACLineStatus;
+            public byte BatteryFlag;
+            public byte BatteryLifePercent;
+            public byte SystemStatusFlag;
+            public int BatteryLifeTime;
+            public int BatteryFullLifeTime;
+        }
+
         [DllImport("powrprof.dll", SetLastError = true)]
         private static extern uint PowerGetActualOverlayScheme(out Guid ActualOverlayGuid);
 
@@ -72,6 +92,9 @@ namespace WinPowerToggle {
 
         [DllImport("powrprof.dll", SetLastError = true)]
         private static extern uint PowerSetActiveOverlayScheme(Guid OverlaySchemeGuid);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetSystemPowerStatus(out SYSTEM_POWER_STATUS lpSystemPowerStatus);
 
         public static OverlayQueryResult GetActiveOverlay() {
             Guid guid = Guid.Empty;
@@ -88,6 +111,22 @@ namespace WinPowerToggle {
         public static uint SetActiveOverlay(string guidString) {
             Guid guid = new Guid(guidString);
             return PowerSetActiveOverlayScheme(guid);
+        }
+
+        public static SystemPowerNativeResult GetSystemPowerInfo() {
+            SYSTEM_POWER_STATUS sps;
+            if (!GetSystemPowerStatus(out sps)) {
+                return null;
+            }
+            bool noBattery = ((sps.BatteryFlag & 128) != 0) || (sps.BatteryFlag == 255);
+            bool charging = !noBattery && ((sps.BatteryFlag & 8) != 0);
+            return new SystemPowerNativeResult {
+                AcLineStatus = sps.ACLineStatus,
+                BatteryFlag = sps.BatteryFlag,
+                BatteryLifePercent = sps.BatteryLifePercent,
+                HasBattery = !noBattery,
+                IsCharging = charging
+            };
         }
     }
 }
@@ -190,6 +229,15 @@ function Get-PowerToggleConfig {
     Validate-ProfileSection -Section $parsed.batteryMode -SectionName 'batteryMode'
     Validate-ProfileSection -Section $parsed.gamingMode -SectionName 'gamingMode'
 
+    $hasNormal = Test-HasProperty $parsed 'normalMode'
+    if ($hasNormal -and $null -ne $parsed.normalMode) {
+        Validate-ProfileSection -Section $parsed.normalMode -SectionName 'normalMode'
+    }
+
+    $normalBrightness = if ($hasNormal -and (Test-HasProperty $parsed.normalMode 'brightness')) { $parsed.normalMode.brightness } else { 70 }
+    $normalRefresh = if ($hasNormal -and (Test-HasProperty $parsed.normalMode 'refreshRate')) { $parsed.normalMode.refreshRate } else { 144 }
+    $normalCpu = if ($hasNormal -and (Test-HasProperty $parsed.normalMode 'maxCpuState')) { $parsed.normalMode.maxCpuState } else { 100 }
+
     return [PSCustomObject]@{
         batteryMode = [PSCustomObject]@{
             brightness        = if (Test-HasProperty $parsed.batteryMode 'brightness') { $parsed.batteryMode.brightness } else { $null }
@@ -197,6 +245,11 @@ function Get-PowerToggleConfig {
             maxCpuState       = if (Test-HasProperty $parsed.batteryMode 'maxCpuState') { $parsed.batteryMode.maxCpuState } else { $null }
             forceBatterySaver = if (Test-HasProperty $parsed.batteryMode 'forceBatterySaver') { [bool]$parsed.batteryMode.forceBatterySaver } else { $false }
             appsToKill        = if (Test-HasProperty $parsed.batteryMode 'appsToKill') { ConvertTo-StringArray $parsed.batteryMode.appsToKill } else { @() }
+        }
+        normalMode = [PSCustomObject]@{
+            brightness  = $normalBrightness
+            refreshRate = $normalRefresh
+            maxCpuState = $normalCpu
         }
         gamingMode = [PSCustomObject]@{
             brightness   = if (Test-HasProperty $parsed.gamingMode 'brightness') { $parsed.gamingMode.brightness } else { $null }
@@ -692,6 +745,30 @@ function Start-ConfiguredApps {
     }
 }
 
+function Get-SystemPowerNativeStatus {
+    [CmdletBinding()]
+    param()
+
+    try {
+        Initialize-PowerOverlayNativeApi
+        $native = [WinPowerToggle.PowerOverlayNative]::GetSystemPowerInfo()
+        if ($null -eq $native) {
+            return $null
+        }
+
+        return [PSCustomObject]@{
+            AcLineStatus       = [int]$native.AcLineStatus
+            BatteryFlag        = [int]$native.BatteryFlag
+            BatteryLifePercent = [int]$native.BatteryLifePercent
+            HasBattery         = [bool]$native.HasBattery
+            IsCharging         = [bool]$native.IsCharging
+        }
+    }
+    catch {
+        return $null
+    }
+}
+
 function Get-BatteryCimInstance {
     [CmdletBinding()]
     param()
@@ -703,22 +780,50 @@ function Get-SystemPowerStatus {
     [CmdletBinding()]
     param()
 
-    $battery = Get-BatteryCimInstance
     $isOnAc = $true
     $powerSource = 'AC (No Battery Detected)'
     $batteryPercent = $null
 
-    if ($null -ne $battery) {
-        $batteryPercent = [int]$battery.EstimatedChargeRemaining
-        # Win32_Battery.BatteryStatus: 1,4,5 = Discharging/Low/Critical (DC); 2,3,6,7,8,9 = AC/Charging
-        $statusCode = [int]$battery.BatteryStatus
-        if ($statusCode -in @(1, 4, 5)) {
-            $isOnAc = $false
-            $powerSource = 'DC (On Battery)'
+    $nativePower = Get-SystemPowerNativeStatus
+    if ($null -ne $nativePower) {
+        if (-not $nativePower.HasBattery) {
+            $isOnAc = $true
+            $powerSource = 'AC (No Battery Detected)'
+            $batteryPercent = $null
         }
         else {
-            $isOnAc = $true
-            $powerSource = 'AC (Plugged In)'
+            if ($nativePower.BatteryLifePercent -ge 0 -and $nativePower.BatteryLifePercent -le 100) {
+                $batteryPercent = [int]$nativePower.BatteryLifePercent
+            }
+
+            if ($nativePower.AcLineStatus -eq 0) {
+                $isOnAc = $false
+                $powerSource = 'DC (On Battery)'
+            }
+            elseif ($nativePower.IsCharging) {
+                $isOnAc = $true
+                $powerSource = 'AC (Charging)'
+            }
+            else {
+                $isOnAc = $true
+                $powerSource = 'AC (Plugged In)'
+            }
+        }
+    }
+    else {
+        $battery = Get-BatteryCimInstance
+        if ($null -ne $battery) {
+            $batteryPercent = [int]$battery.EstimatedChargeRemaining
+            # Win32_Battery.BatteryStatus: 1,4,5 = Discharging/Low/Critical (DC); 2,3,6,7,8,9 = AC/Charging
+            $statusCode = [int]$battery.BatteryStatus
+            if ($statusCode -in @(1, 4, 5)) {
+                $isOnAc = $false
+                $powerSource = 'DC (On Battery)'
+            }
+            else {
+                $isOnAc = $true
+                $powerSource = 'AC (Plugged In)'
+            }
         }
     }
 
@@ -786,6 +891,124 @@ function Format-SystemPowerStatus {
     ) -join [Environment]::NewLine
 }
 
+function Get-HardwareSpecsRaw {
+    [CmdletBinding()]
+    param()
+
+    try {
+        $cpuName = $null
+        try {
+            $cpuReg = Get-ItemProperty -Path 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0' -Name 'ProcessorNameString' -ErrorAction Stop
+            $cpuName = "$($cpuReg.ProcessorNameString)".Trim() -replace '\s+', ' '
+        }
+        catch {
+            $cpuCim = Get-CimInstance -ClassName 'Win32_Processor' -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($null -ne $cpuCim) {
+                $cpuName = "$($cpuCim.Name)".Trim() -replace '\s+', ' '
+            }
+        }
+
+        $logicalThreads = [Environment]::ProcessorCount
+        $gpus = @(Get-CimInstance -ClassName 'Win32_VideoController' -ErrorAction SilentlyContinue |
+            ForEach-Object { "$($_.Name)".Trim() } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Select-Object -Unique)
+
+        $cs = Get-CimInstance -ClassName 'Win32_ComputerSystem' -ErrorAction SilentlyContinue | Select-Object -First 1
+        $totalMem = if ($null -ne $cs -and $null -ne $cs.TotalPhysicalMemory) { [double]$cs.TotalPhysicalMemory } else { 0 }
+
+        $os = Get-CimInstance -ClassName 'Win32_OperatingSystem' -ErrorAction SilentlyContinue | Select-Object -First 1
+        $osCaption = if ($null -ne $os) { "$($os.Caption)".Trim() } else { $null }
+        $osBuild = if ($null -ne $os) { "$($os.BuildNumber)".Trim() } else { $null }
+
+        return [PSCustomObject]@{
+            CpuName          = $cpuName
+            LogicalThreads   = $logicalThreads
+            GpuNames         = $gpus
+            TotalMemoryBytes = $totalMem
+            OsCaption        = $osCaption
+            OsBuild          = $osBuild
+        }
+    }
+    catch {
+        return $null
+    }
+}
+
+function Get-ComputerSpecs {
+    [CmdletBinding()]
+    param()
+
+    $raw = Get-HardwareSpecsRaw
+    if ($null -eq $raw) {
+        return [PSCustomObject]@{
+            Cpu    = 'Unavailable'
+            Gpu    = 'Unavailable'
+            Memory = 'Unavailable'
+            Os     = 'Unavailable'
+        }
+    }
+
+    $cpuText = if (-not [string]::IsNullOrWhiteSpace($raw.CpuName)) {
+        if ($raw.LogicalThreads -gt 0) {
+            "$($raw.CpuName) ($($raw.LogicalThreads) threads)"
+        }
+        else {
+            "$($raw.CpuName)"
+        }
+    }
+    else {
+        'Unavailable'
+    }
+
+    $gpuList = @($raw.GpuNames | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $gpuText = if ($gpuList.Count -gt 0) { $gpuList -join ' + ' } else { 'Unavailable' }
+
+    $memText = if ($null -ne $raw.TotalMemoryBytes -and [double]$raw.TotalMemoryBytes -gt 0) {
+        $gb = [Math]::Round(([double]$raw.TotalMemoryBytes) / 1GB)
+        "${gb} GB RAM"
+    }
+    else {
+        'Unavailable'
+    }
+
+    $osText = if (-not [string]::IsNullOrWhiteSpace($raw.OsCaption)) {
+        $cleanCaption = "$($raw.OsCaption)".Trim() -replace '^Microsoft\s+', ''
+        if (-not [string]::IsNullOrWhiteSpace($raw.OsBuild)) {
+            "$cleanCaption (Build $($raw.OsBuild))"
+        }
+        else {
+            $cleanCaption
+        }
+    }
+    else {
+        'Unavailable'
+    }
+
+    return [PSCustomObject]@{
+        Cpu    = $cpuText
+        Gpu    = $gpuText
+        Memory = $memText
+        Os     = $osText
+    }
+}
+
+function Format-ComputerSpecs {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        $SpecsObject
+    )
+
+    return @(
+        '=== Win-Power-Toggle Computer Specs ==='
+        ("Processor : {0}" -f $SpecsObject.Cpu)
+        ("Graphics  : {0}" -f $SpecsObject.Gpu)
+        ("Memory    : {0}" -f $SpecsObject.Memory)
+        ("OS        : {0}" -f $SpecsObject.Os)
+    ) -join [Environment]::NewLine
+}
+
 function Format-ModeSwitchResult {
     [CmdletBinding()]
     param(
@@ -793,7 +1016,11 @@ function Format-ModeSwitchResult {
         $Result
     )
 
-    $modeTitle = if ($Result.Mode -eq 'battery') { 'Battery Saver' } else { 'Gaming Performance' }
+    $modeTitle = switch ($Result.Mode) {
+        'battery' { 'Battery Saver' }
+        'normal'  { 'Normal (Balanced)' }
+        default   { 'Gaming Performance' }
+    }
     $lines = New-Object System.Collections.Generic.List[string]
     $lines.Add("=== Win-Power-Toggle: $modeTitle Mode ===")
 
@@ -822,26 +1049,36 @@ function Format-ModeSwitchResult {
 function Invoke-WinPowerToggle {
     [CmdletBinding()]
     param(
-        [ValidateSet('', 'battery', 'gaming')]
+        [ValidateSet('', 'battery', 'normal', 'gaming')]
         [string]$Mode,
 
         [switch]$Status,
+
+        [switch]$Specs,
 
         [string]$ConfigPath = '',
 
         [switch]$Quiet
     )
 
-    if (-not $Status -and [string]::IsNullOrWhiteSpace($Mode)) {
-        throw "Specify either -Mode battery, -Mode gaming, or -Status."
+    if (-not $Status -and -not $Specs -and [string]::IsNullOrWhiteSpace($Mode)) {
+        throw "Specify either -Mode battery, -Mode normal, -Mode gaming, -Status, or -Specs."
     }
 
-    if ($Status -and -not [string]::IsNullOrWhiteSpace($Mode)) {
-        throw "Parameters -Mode and -Status are mutually exclusive."
+    $selectedActions = 0
+    if (-not [string]::IsNullOrWhiteSpace($Mode)) { $selectedActions++ }
+    if ($Status) { $selectedActions++ }
+    if ($Specs) { $selectedActions++ }
+    if ($selectedActions -gt 1) {
+        throw "Parameters -Mode, -Status, and -Specs are mutually exclusive."
     }
 
     if ($Status) {
         return Get-SystemPowerStatus
+    }
+
+    if ($Specs) {
+        return Get-ComputerSpecs
     }
 
     if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
@@ -878,6 +1115,37 @@ function Invoke-WinPowerToggle {
         }
 
         $appsStep = Stop-ConfiguredApps -AppNames $profile.appsToKill
+    }
+    elseif ($Mode -eq 'normal') {
+        $profile = $config.normalMode
+
+        $cpuStep = if ($null -ne $profile.maxCpuState) {
+            Set-CpuMaxState -Percent ([int]$profile.maxCpuState)
+        }
+        else {
+            [PSCustomObject]@{ Status = 'Skipped'; Percent = $null; Message = 'maxCpuState not configured.' }
+        }
+
+        $powerModeStep = Set-PowerModeOverlay -Overlay 'Balanced'
+
+        $brightnessStep = if ($null -ne $profile.brightness) {
+            Set-DisplayBrightness -Percent ([int]$profile.brightness)
+        }
+        else {
+            [PSCustomObject]@{ Status = 'Skipped'; Percent = $null; Message = 'brightness not configured.' }
+        }
+
+        $refreshStep = if ($null -ne $profile.refreshRate) {
+            Set-DisplayRefreshRate -RefreshRate $profile.refreshRate -Fallback 'Highest'
+        }
+        else {
+            [PSCustomObject]@{ Status = 'Skipped'; CurrentRate = $null; Message = 'refreshRate not configured.' }
+        }
+
+        $appsStep = [PSCustomObject]@{
+            Status  = 'Unchanged'
+            Message = 'Normal mode leaves running apps unchanged.'
+        }
     }
     else {
         $profile = $config.gamingMode
@@ -925,13 +1193,16 @@ function Invoke-WinPowerToggle {
 
 if ($MyInvocation.InvocationName -ne '.') {
     try {
-        $result = Invoke-WinPowerToggle -Mode $Mode -Status:$Status -ConfigPath $ConfigPath -Quiet:$Quiet
+        $result = Invoke-WinPowerToggle -Mode $Mode -Status:$Status -Specs:$Specs -ConfigPath $ConfigPath -Quiet:$Quiet
         if ($PassThru) {
             Write-Output $result
         }
         elseif (-not $Quiet) {
             if ($Status) {
                 Write-Output (Format-SystemPowerStatus -StatusObject $result)
+            }
+            elseif ($Specs) {
+                Write-Output (Format-ComputerSpecs -SpecsObject $result)
             }
             else {
                 Write-Output (Format-ModeSwitchResult -Result $result)
@@ -940,7 +1211,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     }
     catch {
         [Console]::Error.WriteLine("Error: $($_.Exception.Message)")
-        [Console]::Error.WriteLine("Usage: Switch-Mode.ps1 -Mode <battery|gaming> [-ConfigPath <path>] | -Status")
+        [Console]::Error.WriteLine("Usage: Switch-Mode.ps1 -Mode <battery|normal|gaming> [-ConfigPath <path>] | -Status | -Specs")
         exit 1
     }
 }

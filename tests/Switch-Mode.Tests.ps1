@@ -14,8 +14,22 @@ Describe 'Switch-Mode' {
     }
 
     Context 'Get-PowerToggleConfig' {
-        It 'parses the default repository config.json with all expected fields' {
+        It 'parses the repository config.json with valid schema and expected fields' {
             $cfg = Get-PowerToggleConfig -Path $defaultConfigPath
+            $cfg.batteryMode | Should Not BeNullOrEmpty
+            $cfg.gamingMode | Should Not BeNullOrEmpty
+            $cfg.batteryMode.brightness | Should BeGreaterThan -1
+            $cfg.batteryMode.maxCpuState | Should BeGreaterThan -1
+            $cfg.gamingMode.brightness | Should BeGreaterThan -1
+            $cfg.gamingMode.maxCpuState | Should BeGreaterThan -1
+        }
+
+        It 'parses a standard PRD config JSON fixture with all exact values' {
+            $fixturePath = Join-Path $TestDrive 'prd-fixture.json'
+            $fixtureJson = '{"batteryMode":{"brightness":30,"refreshRate":60,"maxCpuState":50,"forceBatterySaver":true,"appsToKill":["Discord","Steam","EpicGamesLauncher","RiotClientServices"]},"gamingMode":{"brightness":100,"refreshRate":144,"maxCpuState":100,"appsToLaunch":["C:\\Program Files (x86)\\Steam\\steam.exe"]}}'
+            Set-Content -LiteralPath $fixturePath -Value $fixtureJson -Encoding UTF8
+
+            $cfg = Get-PowerToggleConfig -Path $fixturePath
             $cfg.batteryMode.brightness | Should Be 30
             $cfg.batteryMode.refreshRate | Should Be 60
             $cfg.batteryMode.maxCpuState | Should Be 50
@@ -24,6 +38,20 @@ Describe 'Switch-Mode' {
             $cfg.gamingMode.refreshRate | Should Be 144
             $cfg.gamingMode.maxCpuState | Should Be 100
             $cfg.gamingMode.appsToLaunch.Count | Should Be 1
+            $cfg.normalMode.brightness | Should Be 70
+            $cfg.normalMode.refreshRate | Should Be 144
+            $cfg.normalMode.maxCpuState | Should Be 100
+        }
+
+        It 'parses explicit normalMode settings when provided in config.json' {
+            $fixturePath = Join-Path $TestDrive 'with-normal.json'
+            $fixtureJson = '{"batteryMode":{"brightness":30,"refreshRate":60,"maxCpuState":50},"normalMode":{"brightness":65,"refreshRate":60,"maxCpuState":85},"gamingMode":{"brightness":100,"refreshRate":144,"maxCpuState":100}}'
+            Set-Content -LiteralPath $fixturePath -Value $fixtureJson -Encoding UTF8
+
+            $cfg = Get-PowerToggleConfig -Path $fixturePath
+            $cfg.normalMode.brightness | Should Be 65
+            $cfg.normalMode.refreshRate | Should Be 60
+            $cfg.normalMode.maxCpuState | Should Be 85
         }
 
         It 'throws a descriptive error when config file does not exist' {
@@ -254,7 +282,47 @@ Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)
     }
 
     Context 'Status Inspection (-Status)' {
-        It 'aggregates power source, battery percentage, scheme, overlay, CPU cap, brightness, and refresh rate' {
+        It 'prefers real-time Win32 GetSystemPowerStatus over stale Win32_Battery when available' {
+            Mock Get-SystemPowerNativeStatus {
+                return [PSCustomObject]@{
+                    AcLineStatus       = 1
+                    BatteryFlag        = 9
+                    BatteryLifePercent = 84
+                    HasBattery         = $true
+                    IsCharging         = $true
+                }
+            }
+            Mock Get-BatteryCimInstance {
+                return [PSCustomObject]@{ BatteryStatus = 2; EstimatedChargeRemaining = 80 }
+            }
+            Mock Get-ActivePowerScheme {
+                return [PSCustomObject]@{ Guid = '381b4222-f694-41f0-9685-ff5bb260df2e'; Name = 'Balanced' }
+            }
+            Mock Get-PowerModeOverlay {
+                return [PSCustomObject]@{ Guid = 'ded574b5-45a0-4f42-8737-46345c09c238'; Name = 'Best Performance'; Supported = $true }
+            }
+            Mock Get-CpuMaxState {
+                return [PSCustomObject]@{ AcPercent = 100; DcPercent = 50 }
+            }
+            Mock Get-DisplayBrightness { return 70 }
+            Mock Get-DisplayInfo {
+                return [PSCustomObject]@{
+                    Width                 = 1920
+                    Height                = 1080
+                    RefreshRate           = 144
+                    SupportedRefreshRates = @(60, 144)
+                }
+            }
+
+            $status = Get-SystemPowerStatus
+
+            $status.PowerSource | Should Be 'AC (Charging)'
+            $status.BatteryPercent | Should Be 84
+            $status.ActiveCpuMaxState | Should Be 100
+        }
+
+        It 'aggregates power source, battery percentage, scheme, overlay, CPU cap, brightness, and refresh rate via Win32_Battery fallback' {
+            Mock Get-SystemPowerNativeStatus { return $null }
             Mock Get-BatteryCimInstance {
                 return [PSCustomObject]@{ BatteryStatus = 2; EstimatedChargeRemaining = 83 }
             }
@@ -291,6 +359,15 @@ Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)
         }
 
         It 'handles desktop systems with no battery and external displays with no WMI brightness' {
+            Mock Get-SystemPowerNativeStatus {
+                return [PSCustomObject]@{
+                    AcLineStatus       = 1
+                    BatteryFlag        = 128
+                    BatteryLifePercent = 255
+                    HasBattery         = $false
+                    IsCharging         = $false
+                }
+            }
             Mock Get-BatteryCimInstance { return $null }
             Mock Get-ActivePowerScheme {
                 return [PSCustomObject]@{ Guid = '381b4222-f694-41f0-9685-ff5bb260df2e'; Name = 'Balanced' }
@@ -319,15 +396,50 @@ Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)
         }
     }
 
+    Context 'Computer Specs (Get-ComputerSpecs)' {
+        It 'returns hardware specs (CPU, GPU, RAM, OS) without exposing hostname or username' {
+            Mock Get-HardwareSpecsRaw {
+                return [PSCustomObject]@{
+                    CpuName          = 'Sample 12-Core Processor'
+                    LogicalThreads   = 16
+                    GpuNames         = @('Integrated Graphics', 'Discrete GPU')
+                    TotalMemoryBytes = 16GB
+                    OsCaption        = 'Microsoft Windows 11 Home'
+                    OsBuild          = '26100'
+                }
+            }
+
+            $specs = Get-ComputerSpecs
+            $specs.Cpu | Should Match 'Sample 12-Core Processor'
+            $specs.Cpu | Should Match '16 threads'
+            $specs.Gpu | Should Be 'Integrated Graphics + Discrete GPU'
+            $specs.Memory | Should Be '16 GB RAM'
+            $specs.Os | Should Be 'Windows 11 Home (Build 26100)'
+        }
+
+        It 'returns safe fallback labels when hardware spec queries return null' {
+            Mock Get-HardwareSpecsRaw { return $null }
+
+            $specs = Get-ComputerSpecs
+            $specs.Cpu | Should Be 'Unavailable'
+            $specs.Gpu | Should Be 'Unavailable'
+            $specs.Memory | Should Be 'Unavailable'
+            $specs.Os | Should Be 'Unavailable'
+        }
+    }
+
     Context 'End-to-End Orchestration (Invoke-WinPowerToggle)' {
         It 'executes all battery mode steps and continues if brightness is skipped' {
+            $orchCfgPath = Join-Path $TestDrive 'orch-config.json'
+            Set-Content -LiteralPath $orchCfgPath -Value '{"batteryMode":{"brightness":30,"refreshRate":60,"maxCpuState":50,"appsToKill":["Discord"]},"gamingMode":{"brightness":100,"refreshRate":144,"maxCpuState":100,"appsToLaunch":["C:\\Games\\steam.exe"]}}' -Encoding UTF8
+
             Mock Set-CpuMaxState { return [PSCustomObject]@{ Status = 'Changed'; Percent = 50; Message = 'CPU 50%' } }
             Mock Set-PowerModeOverlay { return [PSCustomObject]@{ Status = 'Changed'; Overlay = 'Best Power Efficiency'; Message = 'Overlay set' } }
             Mock Set-DisplayBrightness { return [PSCustomObject]@{ Status = 'Skipped'; Percent = $null; Message = 'External monitor' } }
             Mock Set-DisplayRefreshRate { return [PSCustomObject]@{ Status = 'Changed'; CurrentRate = 60; Message = '60Hz' } }
             Mock Stop-ConfiguredApps { return [PSCustomObject]@{ Status = 'Unchanged'; Stopped = @(); NotRunning = @('Discord'); Failed = @(); Message = 'None running' } }
 
-            $result = Invoke-WinPowerToggle -Mode 'battery' -ConfigPath $defaultConfigPath -Quiet
+            $result = Invoke-WinPowerToggle -Mode 'battery' -ConfigPath $orchCfgPath -Quiet
 
             $result.Mode | Should Be 'battery'
             $result.Steps.Cpu.Status | Should Be 'Changed'
@@ -342,13 +454,16 @@ Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)
         }
 
         It 'executes all gaming mode steps with Best Performance overlay and Highest refresh-rate fallback' {
+            $orchCfgPath = Join-Path $TestDrive 'orch-config-game.json'
+            Set-Content -LiteralPath $orchCfgPath -Value '{"batteryMode":{"brightness":30,"refreshRate":60,"maxCpuState":50,"appsToKill":["Discord"]},"gamingMode":{"brightness":100,"refreshRate":144,"maxCpuState":100,"appsToLaunch":["C:\\Games\\steam.exe"]}}' -Encoding UTF8
+
             Mock Set-CpuMaxState { return [PSCustomObject]@{ Status = 'Changed'; Percent = 100; Message = 'CPU 100%' } }
             Mock Set-PowerModeOverlay { return [PSCustomObject]@{ Status = 'Changed'; Overlay = 'Best Performance'; Message = 'Overlay set' } }
             Mock Set-DisplayBrightness { return [PSCustomObject]@{ Status = 'Changed'; Percent = 100; Message = '100%' } }
             Mock Set-DisplayRefreshRate { return [PSCustomObject]@{ Status = 'Changed'; CurrentRate = 144; Message = '144Hz' } }
             Mock Start-ConfiguredApps { return [PSCustomObject]@{ Status = 'Changed'; Launched = @('steam.exe'); AlreadyRunning = @(); Missing = @(); Failed = @(); Message = 'Launched' } }
 
-            $result = Invoke-WinPowerToggle -Mode 'gaming' -ConfigPath $defaultConfigPath -Quiet
+            $result = Invoke-WinPowerToggle -Mode 'gaming' -ConfigPath $orchCfgPath -Quiet
 
             $result.Mode | Should Be 'gaming'
             Assert-MockCalled Set-CpuMaxState -Scope It -Times 1 -Exactly -ParameterFilter { $Percent -eq 100 }
@@ -356,6 +471,29 @@ Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)
             Assert-MockCalled Set-DisplayBrightness -Scope It -Times 1 -Exactly -ParameterFilter { $Percent -eq 100 }
             Assert-MockCalled Set-DisplayRefreshRate -Scope It -Times 1 -Exactly -ParameterFilter { $RefreshRate -eq 144 -and $Fallback -eq 'Highest' }
             Assert-MockCalled Start-ConfiguredApps -Scope It -Times 1 -Exactly
+        }
+
+        It 'executes all normal mode steps with Balanced overlay and leaves apps untouched' {
+            $orchCfgPath = Join-Path $TestDrive 'orch-config-normal.json'
+            Set-Content -LiteralPath $orchCfgPath -Value '{"batteryMode":{"brightness":30,"refreshRate":60,"maxCpuState":50},"normalMode":{"brightness":70,"refreshRate":144,"maxCpuState":100},"gamingMode":{"brightness":100,"refreshRate":144,"maxCpuState":100}}' -Encoding UTF8
+
+            Mock Set-CpuMaxState { return [PSCustomObject]@{ Status = 'Changed'; Percent = 100; Message = 'CPU 100%' } }
+            Mock Set-PowerModeOverlay { return [PSCustomObject]@{ Status = 'Changed'; Overlay = 'Balanced'; Message = 'Overlay Balanced' } }
+            Mock Set-DisplayBrightness { return [PSCustomObject]@{ Status = 'Changed'; Percent = 70; Message = '70%' } }
+            Mock Set-DisplayRefreshRate { return [PSCustomObject]@{ Status = 'Unchanged'; CurrentRate = 144; Message = '144Hz' } }
+            Mock Stop-ConfiguredApps { return [PSCustomObject]@{ Status = 'Unchanged'; Message = 'unused' } }
+            Mock Start-ConfiguredApps { return [PSCustomObject]@{ Status = 'Unchanged'; Message = 'unused' } }
+
+            $result = Invoke-WinPowerToggle -Mode 'normal' -ConfigPath $orchCfgPath -Quiet
+
+            $result.Mode | Should Be 'normal'
+            $result.Steps.Apps.Status | Should Be 'Unchanged'
+            Assert-MockCalled Set-CpuMaxState -Scope It -Times 1 -Exactly -ParameterFilter { $Percent -eq 100 }
+            Assert-MockCalled Set-PowerModeOverlay -Scope It -Times 1 -Exactly -ParameterFilter { $Overlay -eq 'Balanced' }
+            Assert-MockCalled Set-DisplayBrightness -Scope It -Times 1 -Exactly -ParameterFilter { $Percent -eq 70 }
+            Assert-MockCalled Set-DisplayRefreshRate -Scope It -Times 1 -Exactly -ParameterFilter { $RefreshRate -eq 144 -and $Fallback -eq 'Highest' }
+            Assert-MockCalled Stop-ConfiguredApps -Scope It -Times 0 -Exactly
+            Assert-MockCalled Start-ConfiguredApps -Scope It -Times 0 -Exactly
         }
 
         It 'throws when neither -Mode nor -Status is provided' {

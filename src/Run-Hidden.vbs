@@ -39,7 +39,7 @@ End If
 Dim forwardedArgs, firstArgLower, i
 firstArgLower = LCase(Trim(WScript.Arguments(0)))
 
-If argCount = 1 And (firstArgLower = "battery" Or firstArgLower = "gaming") Then
+If argCount = 1 And (firstArgLower = "battery" Or firstArgLower = "normal" Or firstArgLower = "gaming") Then
     forwardedArgs = "-Mode " & firstArgLower
 Else
     forwardedArgs = ""

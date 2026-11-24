@@ -24,6 +24,7 @@ Describe 'App-Logic' {
             $light.TextPrimary | Should Be '#18181B'
             $light.TextMuted | Should Be '#52525B'
             $light.BatteryBtnBg | Should Be '#166534'
+            $light.NormalBtnBg | Should Be '#27272A'
             $light.GamingBtnBg | Should Be '#B45309'
             $light.FocusRing | Should Be '#1D4ED8'
         }
@@ -35,6 +36,7 @@ Describe 'App-Logic' {
             $dark.TextPrimary | Should Be '#F4F4F5'
             $dark.TextMuted | Should Be '#A8ACB8'
             $dark.BatteryBtnBg | Should Be '#4ADE80'
+            $dark.NormalBtnBg | Should Be '#E4E4E7'
             $dark.GamingBtnBg | Should Be '#F59E0B'
             $dark.FocusRing | Should Be '#93C5FD'
         }
@@ -49,11 +51,28 @@ Describe 'App-Logic' {
             }
             $cfg = [PSCustomObject]@{
                 batteryMode = [PSCustomObject]@{ maxCpuState = 50; refreshRate = 60 }
+                normalMode  = [PSCustomObject]@{ maxCpuState = 100; refreshRate = 144 }
                 gamingMode  = [PSCustomObject]@{ maxCpuState = 100; refreshRate = 144 }
             }
 
             $detected = Get-DetectedProfileState -StatusObject $status -Config $cfg
             $detected.Label | Should Be 'Battery Saver'
+        }
+
+        It 'detects Normal when overlay is Balanced and CPU cap matches normal profile' {
+            $status = [PSCustomObject]@{
+                PowerModeOverlay  = 'Balanced'
+                ActiveCpuMaxState = 100
+                RefreshRateHz     = 144
+            }
+            $cfg = [PSCustomObject]@{
+                batteryMode = [PSCustomObject]@{ maxCpuState = 50; refreshRate = 60 }
+                normalMode  = [PSCustomObject]@{ maxCpuState = 100; refreshRate = 144 }
+                gamingMode  = [PSCustomObject]@{ maxCpuState = 100; refreshRate = 144 }
+            }
+
+            $detected = Get-DetectedProfileState -StatusObject $status -Config $cfg
+            $detected.Label | Should Be 'Normal'
         }
 
         It 'detects Gaming Performance when overlay is Best Performance and CPU cap matches gaming profile' {
@@ -64,6 +83,7 @@ Describe 'App-Logic' {
             }
             $cfg = [PSCustomObject]@{
                 batteryMode = [PSCustomObject]@{ maxCpuState = 50; refreshRate = 60 }
+                normalMode  = [PSCustomObject]@{ maxCpuState = 100; refreshRate = 144 }
                 gamingMode  = [PSCustomObject]@{ maxCpuState = 100; refreshRate = 144 }
             }
 
@@ -71,14 +91,15 @@ Describe 'App-Logic' {
             $detected.Label | Should Be 'Gaming Performance'
         }
 
-        It 'detects Custom / Mixed when live state does not match either preset' {
+        It 'detects Custom / Mixed when live state does not match any preset' {
             $status = [PSCustomObject]@{
                 PowerModeOverlay  = 'Balanced'
-                ActiveCpuMaxState = 100
+                ActiveCpuMaxState = 60
                 RefreshRateHz     = 144
             }
             $cfg = [PSCustomObject]@{
                 batteryMode = [PSCustomObject]@{ maxCpuState = 50; refreshRate = 60 }
+                normalMode  = [PSCustomObject]@{ maxCpuState = 100; refreshRate = 144 }
                 gamingMode  = [PSCustomObject]@{ maxCpuState = 100; refreshRate = 144 }
             }
 
@@ -100,6 +121,19 @@ Describe 'App-Logic' {
             $text | Should Match '60Hz'
             $text | Should Match 'Best Power Efficiency'
             ($text.Contains([char]0x2014)) | Should Be $false
+        }
+
+        It 'formats concise normal mode summary with Balanced overlay label' {
+            $profile = [PSCustomObject]@{
+                maxCpuState = 100
+                brightness  = 70
+                refreshRate = 144
+            }
+            $text = Format-ProfileCardSummary -Profile $profile -Mode 'normal'
+            $text | Should Match '100% CPU'
+            $text | Should Match '70% brightness'
+            $text | Should Match '144Hz'
+            $text | Should Match 'Balanced'
         }
 
         It 'formats concise gaming mode summary with max keyword cleanly' {
@@ -125,6 +159,13 @@ Describe 'App-Logic' {
             ($choices -contains 'max') | Should Be $true
             ($choices -contains 'min') | Should Be $true
             $choices.Count | Should Be 5
+        }
+
+        It 'detects whether supported refresh rate lists changed so live polling avoids resetting open dropdowns' {
+            Test-RefreshRatesChanged -Current @(60, 144) -Incoming @(60, 144) | Should Be $false
+            Test-RefreshRatesChanged -Current @(60, 144) -Incoming @(144, 60) | Should Be $false
+            Test-RefreshRatesChanged -Current @(60, 144) -Incoming @(60) | Should Be $true
+            Test-RefreshRatesChanged -Current @(60) -Incoming @(60, 144) | Should Be $true
         }
     }
 
@@ -222,6 +263,7 @@ Describe 'App-Logic' {
             $window = [Windows.Markup.XamlReader]::Parse($xaml)
             $window | Should Not BeNullOrEmpty
             $window.FindName('BtnBatteryMode') | Should Not BeNullOrEmpty
+            $window.FindName('BtnNormalMode') | Should Not BeNullOrEmpty
             $window.FindName('BtnGamingMode') | Should Not BeNullOrEmpty
             $window.FindName('BtnRefreshStatus') | Should Not BeNullOrEmpty
             $window.FindName('BtnThemeToggle') | Should Not BeNullOrEmpty
@@ -229,8 +271,16 @@ Describe 'App-Logic' {
             $window.FindName('BtnSaveConfig') | Should Not BeNullOrEmpty
             $window.FindName('BtnReloadConfig') | Should Not BeNullOrEmpty
             $window.FindName('TabProfiles') | Should Not BeNullOrEmpty
+            $window.FindName('SliderNormalCpu') | Should Not BeNullOrEmpty
+            $window.FindName('SliderNormalBright') | Should Not BeNullOrEmpty
+            $window.FindName('CboNormalRefresh') | Should Not BeNullOrEmpty
+            $window.FindName('TxtSpecCpu') | Should Not BeNullOrEmpty
+            $window.FindName('TxtSpecGpu') | Should Not BeNullOrEmpty
+            $window.FindName('TxtSpecRam') | Should Not BeNullOrEmpty
+            $window.FindName('TxtSpecOs') | Should Not BeNullOrEmpty
             $window.FindName('BannerError') | Should Not BeNullOrEmpty
             $window.FindName('BannerLoading') | Should Not BeNullOrEmpty
+            $window.FindName('TxtStatusUpdated') | Should Not BeNullOrEmpty
         }
 
         It 'applies Dark and Light themes cleanly via Set-WindowThemePalette without PSObject brush wrapping' {

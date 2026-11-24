@@ -6,13 +6,13 @@ Built entirely on native Windows APIs (`powercfg`, `powrprof.dll`, WMI, `user32.
 
 ## Features (v1.0)
 
-- **Single-command profile switching (`-Mode battery` / `-Mode gaming`)** driven by a central `config.json`.
-- **Modern Standby (S0) CPU & Power Mode control**: updates `PROCTHROTTLEMAX` directly on `SCHEME_CURRENT` (`Balanced`) for both AC and DC, and switches Windows 11's native Power Mode overlay (`Best Power Efficiency` for battery, `Best Performance` for gaming).
+- **Single-command profile switching (`-Mode battery` / `-Mode normal` / `-Mode gaming`)** driven by a central `config.json`.
+- **Modern Standby (S0) CPU & Power Mode control**: updates `PROCTHROTTLEMAX` directly on `SCHEME_CURRENT` (`Balanced`) for both AC and DC, and switches Windows 11's native Power Mode overlay (`Best Power Efficiency` for battery, `Balanced` for normal, `Best Performance` for gaming).
 - **WMI internal display dimming**: sets laptop panel brightness via `WmiMonitorBrightnessMethods`, skipping cleanly if an external monitor does not support WMI brightness.
-- **Native refresh-rate switching (`src/Display-Helper.ps1`)**: queries panel modes via `EnumDisplaySettingsW` and switches refresh rates (e.g., 60Hz for battery, 144Hz or panel max for gaming) via `ChangeDisplaySettingsExW`, with automatic fallback if a configured rate is not supported by the active monitor.
-- **Background & gaming app management**: terminates configured launcher processes (`appsToKill`) in battery mode and launches configured gaming utilities (`appsToLaunch`) in gaming mode, skipping missing paths, already-running apps, or processes that are not running.
-- **Real-time status inspection (`-Status`)**: displays power source (AC/DC), battery percentage, active power scheme, Windows Power Mode overlay, AC/DC `PROCTHROTTLEMAX`, brightness, and display refresh rate.
-- **Desktop and System Tray App (`src/WinPowerToggle-App.ps1` + `src/Launch-App.vbs`)**: native zero-dependency WPF control window for one-click profile switching, live hardware telemetry, visual `config.json` profile editing (CPU cap, brightness, panel refresh rate, app lists with file browser), Light/Dark theme toggle, and a System Tray right-click menu.
+- **Native refresh-rate switching (`src/Display-Helper.ps1`)**: queries panel modes via `EnumDisplaySettingsW` and switches refresh rates (e.g., 60Hz for battery, 144Hz or panel max for normal/gaming) via `ChangeDisplaySettingsExW`, with automatic fallback if a configured rate is not supported by the active monitor.
+- **Background & gaming app management**: terminates configured launcher processes (`appsToKill`) in battery mode, keeps running apps untouched in normal mode, and launches configured gaming utilities (`appsToLaunch`) in gaming mode, skipping missing paths, already-running apps, or processes that are not running.
+- **Real-time status & specs inspection (`-Status`, `-Specs`)**: reads live AC/Charging/DC power status and battery percentage via Win32 `GetSystemPowerStatus`, active power scheme, Windows Power Mode overlay, AC/DC `PROCTHROTTLEMAX`, brightness, display refresh rate, and local computer specs (CPU, GPU, RAM, OS).
+- **Desktop and System Tray App (`src/WinPowerToggle-App.ps1` + `src/Launch-App.vbs`)**: native zero-dependency WPF control window for one-click Battery/Normal/Gaming switching, automatic 2-second live hardware telemetry (plus instant refresh on charger plug/unplug and display changes), Computer Specs panel, visual `config.json` profile editor, Light/Dark theme toggle, and a System Tray right-click menu.
 - **Silent desktop shortcut wrapper (`src/Run-Hidden.vbs`)**: triggers direct CLI mode switches with zero console window flash.
 
 ## Directory Structure
@@ -60,6 +60,11 @@ Edit `config.json` in the repository root to match your laptop's panel and insta
       "EpicGamesLauncher",
       "RiotClientServices"
     ]
+  },
+  "normalMode": {
+    "brightness": 70,
+    "refreshRate": 144,
+    "maxCpuState": 100
   },
   "gamingMode": {
     "brightness": 100,
@@ -111,10 +116,12 @@ To run scripts without permanently altering Windows' system-wide PowerShell exec
 # Inspect current power, CPU cap, Power Mode overlay, brightness, and refresh rate
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\src\Switch-Mode.ps1 -Status
 
-# Switch to Battery Saver profile
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\src\Switch-Mode.ps1 -Mode battery
+# Inspect hardware specs (CPU, GPU, RAM, OS)
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\src\Switch-Mode.ps1 -Specs
 
-# Switch to Gaming Performance profile
+# Switch to Battery Saver, Normal (Balanced), or Gaming Performance profile
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\src\Switch-Mode.ps1 -Mode battery
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\src\Switch-Mode.ps1 -Mode normal
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\src\Switch-Mode.ps1 -Mode gaming
 
 # Use an alternate configuration file

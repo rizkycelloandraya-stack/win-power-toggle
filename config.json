@@ -11,6 +11,11 @@
       "RiotClientServices"
     ]
   },
+  "normalMode": {
+    "brightness": 70,
+    "refreshRate": 144,
+    "maxCpuState": 100
+  },
   "gamingMode": {
     "brightness": 100,
     "refreshRate": 144,

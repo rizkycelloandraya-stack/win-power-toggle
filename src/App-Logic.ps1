@@ -37,6 +37,10 @@ function Get-AppThemePalette {
             BatteryBtnPress    = '#0F3F22'
             BatteryBtnFg       = '#FFFFFF'
             BatteryAccentFg    = '#14532D'
+            NormalBtnBg        = '#27272A'
+            NormalBtnHover     = '#18181B'
+            NormalBtnPress     = '#09090B'
+            NormalBtnFg        = '#FFFFFF'
             GamingBtnBg        = '#B45309'
             GamingBtnHover     = '#92400E'
             GamingBtnPress     = '#78350F'
@@ -77,6 +81,10 @@ function Get-AppThemePalette {
         BatteryBtnPress    = '#22C55E'
         BatteryBtnFg       = '#052E16'
         BatteryAccentFg    = '#4ADE80'
+        NormalBtnBg        = '#E4E4E7'
+        NormalBtnHover     = '#F4F4F5'
+        NormalBtnPress     = '#D4D4D8'
+        NormalBtnFg        = '#18181B'
         GamingBtnBg        = '#F59E0B'
         GamingBtnHover     = '#FBBF24'
         GamingBtnPress     = '#D97706'
@@ -151,6 +159,7 @@ function Get-DetectedProfileState {
     )
 
     $batCpu = if ($null -ne $Config -and $null -ne $Config.batteryMode.maxCpuState) { [int]$Config.batteryMode.maxCpuState } else { 50 }
+    $normalCpu = if ($null -ne $Config -and $null -ne $Config.PSObject.Properties['normalMode'] -and $null -ne $Config.normalMode.maxCpuState) { [int]$Config.normalMode.maxCpuState } else { 100 }
     $gameCpu = if ($null -ne $Config -and $null -ne $Config.gamingMode.maxCpuState) { [int]$Config.gamingMode.maxCpuState } else { 100 }
 
     $overlay = "$($StatusObject.PowerModeOverlay)"
@@ -170,6 +179,13 @@ function Get-DetectedProfileState {
         }
     }
 
+    if ($overlay -eq 'Balanced' -and ($null -eq $cpuCap -or $cpuCap -eq $normalCpu)) {
+        return [PSCustomObject]@{
+            Label  = 'Normal'
+            Detail = "Overlay: Balanced, CPU cap: ${cpuCap}%"
+        }
+    }
+
     return [PSCustomObject]@{
         Label  = 'Custom'
         Detail = "Overlay: $overlay, CPU cap: ${cpuCap}%"
@@ -183,7 +199,7 @@ function Format-ProfileCardSummary {
         $Profile,
 
         [Parameter(Mandatory = $true)]
-        [ValidateSet('battery', 'gaming')]
+        [ValidateSet('battery', 'normal', 'gaming')]
         [string]$Mode
     )
 
@@ -208,11 +224,10 @@ function Format-ProfileCardSummary {
         }
     }
 
-    if ($Mode -eq 'battery') {
-        $parts.Add('Best Power Efficiency')
-    }
-    else {
-        $parts.Add('Best Performance')
+    switch ($Mode) {
+        'battery' { $parts.Add('Best Power Efficiency') }
+        'normal'  { $parts.Add('Balanced') }
+        default   { $parts.Add('Best Performance') }
     }
 
     return ($parts -join ', ')
@@ -254,6 +269,31 @@ function Get-RefreshRateChoices {
     $result.Add('min')
 
     return $result.ToArray()
+}
+
+function Test-RefreshRatesChanged {
+    [CmdletBinding()]
+    param(
+        [AllowEmptyCollection()]
+        [int[]]$Current = @(),
+
+        [AllowEmptyCollection()]
+        [int[]]$Incoming = @()
+    )
+
+    $a = @($Current | Sort-Object -Unique)
+    $b = @($Incoming | Sort-Object -Unique)
+    if ($a.Count -ne $b.Count) {
+        return $true
+    }
+
+    for ($i = 0; $i -lt $a.Count; $i++) {
+        if ($a[$i] -ne $b[$i]) {
+            return $true
+        }
+    }
+
+    return $false
 }
 
 function Add-AppListItem {
@@ -361,6 +401,10 @@ function Save-PowerToggleConfig {
 
     $batBrightness = if ($null -ne $Config.batteryMode.brightness) { [int]$Config.batteryMode.brightness } else { $null }
     $batCpu = if ($null -ne $Config.batteryMode.maxCpuState) { [int]$Config.batteryMode.maxCpuState } else { $null }
+    $hasNormal = ($null -ne $Config.PSObject.Properties['normalMode'] -and $null -ne $Config.normalMode)
+    $normalBrightness = if ($hasNormal -and $null -ne $Config.normalMode.brightness) { [int]$Config.normalMode.brightness } else { 70 }
+    $normalCpu = if ($hasNormal -and $null -ne $Config.normalMode.maxCpuState) { [int]$Config.normalMode.maxCpuState } else { 100 }
+    $normalRateInput = if ($hasNormal -and $null -ne $Config.normalMode.refreshRate) { $Config.normalMode.refreshRate } else { 144 }
     $gameBrightness = if ($null -ne $Config.gamingMode.brightness) { [int]$Config.gamingMode.brightness } else { $null }
     $gameCpu = if ($null -ne $Config.gamingMode.maxCpuState) { [int]$Config.gamingMode.maxCpuState } else { $null }
 
@@ -370,6 +414,12 @@ function Save-PowerToggleConfig {
     if ($null -ne $batCpu -and ($batCpu -lt 0 -or $batCpu -gt 100)) {
         throw "Configuration error: batteryMode.maxCpuState must be between 0 and 100 (got $batCpu)."
     }
+    if ($null -ne $normalBrightness -and ($normalBrightness -lt 0 -or $normalBrightness -gt 100)) {
+        throw "Configuration error: normalMode.brightness must be between 0 and 100 (got $normalBrightness)."
+    }
+    if ($null -ne $normalCpu -and ($normalCpu -lt 0 -or $normalCpu -gt 100)) {
+        throw "Configuration error: normalMode.maxCpuState must be between 0 and 100 (got $normalCpu)."
+    }
     if ($null -ne $gameBrightness -and ($gameBrightness -lt 0 -or $gameBrightness -gt 100)) {
         throw "Configuration error: gamingMode.brightness must be between 0 and 100 (got $gameBrightness)."
     }
@@ -378,6 +428,7 @@ function Save-PowerToggleConfig {
     }
 
     $batRate = ConvertTo-RateJsonValue $Config.batteryMode.refreshRate
+    $normalRate = ConvertTo-RateJsonValue $normalRateInput
     $gameRate = ConvertTo-RateJsonValue $Config.gamingMode.refreshRate
 
     $forceSaver = if ($null -ne $Config.batteryMode.PSObject.Properties['forceBatterySaver']) {
@@ -394,6 +445,11 @@ function Save-PowerToggleConfig {
             maxCpuState       = $batCpu
             forceBatterySaver = $forceSaver
             appsToKill        = @($Config.batteryMode.appsToKill | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        }
+        normalMode = [ordered]@{
+            brightness  = $normalBrightness
+            refreshRate = $normalRate
+            maxCpuState = $normalCpu
         }
         gamingMode = [ordered]@{
             brightness   = $gameBrightness
@@ -422,9 +478,9 @@ function Get-AppWindowXaml {
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Win-Power-Toggle"
-        Width="640"
-        Height="760"
-        MinWidth="520"
+        Width="720"
+        Height="800"
+        MinWidth="580"
         MinHeight="560"
         WindowStartupLocation="CenterScreen"
         ResizeMode="CanResize"
@@ -453,6 +509,10 @@ function Get-AppWindowXaml {
         <SolidColorBrush x:Key="BatteryBtnPress" Color="#0F3F22"/>
         <SolidColorBrush x:Key="BatteryBtnFg" Color="#FFFFFF"/>
         <SolidColorBrush x:Key="BatteryAccentFg" Color="#14532D"/>
+        <SolidColorBrush x:Key="NormalBtnBg" Color="#27272A"/>
+        <SolidColorBrush x:Key="NormalBtnHover" Color="#18181B"/>
+        <SolidColorBrush x:Key="NormalBtnPress" Color="#09090B"/>
+        <SolidColorBrush x:Key="NormalBtnFg" Color="#FFFFFF"/>
         <SolidColorBrush x:Key="GamingBtnBg" Color="#B45309"/>
         <SolidColorBrush x:Key="GamingBtnHover" Color="#92400E"/>
         <SolidColorBrush x:Key="GamingBtnPress" Color="#78350F"/>
@@ -529,6 +589,22 @@ function Get-AppWindowXaml {
                 <Trigger Property="IsPressed" Value="True">
                     <Setter Property="Background" Value="{DynamicResource BatteryBtnPress}"/>
                     <Setter Property="BorderBrush" Value="{DynamicResource BatteryBtnPress}"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="NormalModeButton" TargetType="Button" BasedOn="{StaticResource ModeActionButton}">
+            <Setter Property="Background" Value="{DynamicResource NormalBtnBg}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource NormalBtnBg}"/>
+            <Setter Property="Foreground" Value="{DynamicResource NormalBtnFg}"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource NormalBtnHover}"/>
+                    <Setter Property="BorderBrush" Value="{DynamicResource NormalBtnHover}"/>
+                </Trigger>
+                <Trigger Property="IsPressed" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource NormalBtnPress}"/>
+                    <Setter Property="BorderBrush" Value="{DynamicResource NormalBtnPress}"/>
                 </Trigger>
             </Style.Triggers>
         </Style>
@@ -935,7 +1011,9 @@ function Get-AppWindowXaml {
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="12"/>
+                            <ColumnDefinition Width="10"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="10"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
 
@@ -955,8 +1033,24 @@ function Get-AppWindowXaml {
                             </StackPanel>
                         </Button>
 
-                        <Button x:Name="BtnGamingMode"
+                        <Button x:Name="BtnNormalMode"
                                 Grid.Column="2"
+                                Style="{StaticResource NormalModeButton}"
+                                AutomationProperties.Name="Switch to Normal Balanced Profile">
+                            <StackPanel>
+                                <TextBlock Text="Normal"
+                                           FontSize="15"
+                                           FontWeight="SemiBold"/>
+                                <TextBlock x:Name="TxtNormalSummary"
+                                           Text="100% CPU, 70% brightness, 144Hz, Balanced"
+                                           FontSize="12"
+                                           Margin="0,4,0,0"
+                                           TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </Button>
+
+                        <Button x:Name="BtnGamingMode"
+                                Grid.Column="4"
                                 Style="{StaticResource GamingModeButton}"
                                 AutomationProperties.Name="Switch to Gaming Performance Profile">
                             <StackPanel>
@@ -987,16 +1081,22 @@ function Get-AppWindowXaml {
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="0"
-                                   Text="Live Hardware Status"
-                                   FontSize="14"
-                                   FontWeight="SemiBold"
-                                   VerticalAlignment="Center"
-                                   Foreground="{DynamicResource TextPrimary}"/>
+                        <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                            <TextBlock Text="Live Hardware Status"
+                                       FontSize="14"
+                                       FontWeight="SemiBold"
+                                       Foreground="{DynamicResource TextPrimary}"/>
+                            <TextBlock x:Name="TxtStatusUpdated"
+                                       Text="Live (2s) | Reading hardware..."
+                                       FontSize="11"
+                                       Margin="0,2,12,0"
+                                       Foreground="{DynamicResource TextMuted}"/>
+                        </StackPanel>
                         <Button x:Name="BtnRefreshStatus"
                                 Grid.Column="1"
                                 Style="{StaticResource SecondaryButton}"
                                 Content="Refresh Status"
+                                VerticalAlignment="Center"
                                 AutomationProperties.Name="Refresh Live Hardware Status"/>
                     </Grid>
 
@@ -1043,6 +1143,62 @@ function Get-AppWindowXaml {
                 </StackPanel>
             </Border>
 
+            <!-- Computer Specs -->
+            <Border Background="{DynamicResource CardBg}"
+                    BorderBrush="{DynamicResource BorderSubtle}"
+                    BorderThickness="1"
+                    CornerRadius="6"
+                    Padding="16"
+                    Margin="0,0,0,16">
+                <StackPanel>
+                    <TextBlock Text="Computer Specs"
+                               FontSize="14"
+                               FontWeight="SemiBold"
+                               Foreground="{DynamicResource TextPrimary}"
+                               Margin="0,0,0,12"/>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="10"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="10"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <Border Grid.Row="0" Grid.Column="0" Background="{DynamicResource RecessedBg}" CornerRadius="5" Padding="12,10">
+                            <StackPanel>
+                                <TextBlock Text="Processor" FontSize="12" Foreground="{DynamicResource TextOnRecessed}"/>
+                                <TextBlock x:Name="TxtSpecCpu" Text="Reading system hardware..." FontFamily="Consolas" FontSize="12" FontWeight="SemiBold" Margin="0,4,0,0" Foreground="{DynamicResource TextPrimary}" TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Grid.Row="0" Grid.Column="2" Background="{DynamicResource RecessedBg}" CornerRadius="5" Padding="12,10">
+                            <StackPanel>
+                                <TextBlock Text="Graphics" FontSize="12" Foreground="{DynamicResource TextOnRecessed}"/>
+                                <TextBlock x:Name="TxtSpecGpu" Text="Reading system hardware..." FontFamily="Consolas" FontSize="12" FontWeight="SemiBold" Margin="0,4,0,0" Foreground="{DynamicResource TextPrimary}" TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Grid.Row="2" Grid.Column="0" Background="{DynamicResource RecessedBg}" CornerRadius="5" Padding="12,10">
+                            <StackPanel>
+                                <TextBlock Text="Memory" FontSize="12" Foreground="{DynamicResource TextOnRecessed}"/>
+                                <TextBlock x:Name="TxtSpecRam" Text="Reading system hardware..." FontFamily="Consolas" FontSize="12" FontWeight="SemiBold" Margin="0,4,0,0" Foreground="{DynamicResource TextPrimary}" TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Grid.Row="2" Grid.Column="2" Background="{DynamicResource RecessedBg}" CornerRadius="5" Padding="12,10">
+                            <StackPanel>
+                                <TextBlock Text="Operating System" FontSize="12" Foreground="{DynamicResource TextOnRecessed}"/>
+                                <TextBlock x:Name="TxtSpecOs" Text="Reading system hardware..." FontFamily="Consolas" FontSize="12" FontWeight="SemiBold" Margin="0,4,0,0" Foreground="{DynamicResource TextPrimary}" TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+                </StackPanel>
+            </Border>
+
             <!-- Last Action Readout -->
             <Border Background="{DynamicResource CardBg}"
                     BorderBrush="{DynamicResource BorderSubtle}"
@@ -1057,7 +1213,7 @@ function Get-AppWindowXaml {
                                Foreground="{DynamicResource TextPrimary}"
                                Margin="0,0,0,8"/>
                     <TextBlock x:Name="TxtLastAction"
-                               Text="No mode switch run in this session yet. Choose Battery Saver or Gaming Performance above."
+                               Text="No mode switch run in this session yet. Choose Battery Saver, Normal, or Gaming Performance above."
                                FontFamily="Consolas"
                                FontSize="12"
                                Foreground="{DynamicResource TextMuted}"
@@ -1166,6 +1322,48 @@ function Get-AppWindowXaml {
                                     <Button x:Name="BtnAddKillApp" Grid.Column="1" Style="{StaticResource SecondaryButton}" Content="Add" Margin="0,0,8,0" AutomationProperties.Name="Add Process to Stop List"/>
                                     <Button x:Name="BtnRemoveKillApp" Grid.Column="2" Style="{StaticResource SecondaryButton}" Content="Remove Selected" IsEnabled="False" AutomationProperties.Name="Remove Selected Process from Stop List"/>
                                 </Grid>
+                            </StackPanel>
+                        </TabItem>
+
+                        <!-- Normal Profile Tab -->
+                        <TabItem Header="Normal Profile">
+                            <StackPanel>
+                                <Grid Margin="0,0,0,12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="155"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="52"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Label Grid.Column="0" Content="Max CPU State" Target="{Binding ElementName=SliderNormalCpu}" Foreground="{DynamicResource TextPrimary}" VerticalAlignment="Center" Padding="0"/>
+                                    <Slider x:Name="SliderNormalCpu" Grid.Column="1" Minimum="5" Maximum="100" TickFrequency="5" IsSnapToTickEnabled="True" VerticalAlignment="Center" AutomationProperties.Name="Normal Mode Max CPU State Percentage"/>
+                                    <TextBlock x:Name="TxtNormalCpuVal" Grid.Column="2" Text="100%" FontFamily="Consolas" FontWeight="SemiBold" HorizontalAlignment="Right" VerticalAlignment="Center" Foreground="{DynamicResource TextPrimary}"/>
+                                </Grid>
+
+                                <Grid Margin="0,0,0,12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="155"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="52"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Label Grid.Column="0" Content="Display Brightness" Target="{Binding ElementName=SliderNormalBright}" Foreground="{DynamicResource TextPrimary}" VerticalAlignment="Center" Padding="0"/>
+                                    <Slider x:Name="SliderNormalBright" Grid.Column="1" Minimum="0" Maximum="100" TickFrequency="5" IsSnapToTickEnabled="True" VerticalAlignment="Center" AutomationProperties.Name="Normal Mode Display Brightness Percentage"/>
+                                    <TextBlock x:Name="TxtNormalBrightVal" Grid.Column="2" Text="70%" FontFamily="Consolas" FontWeight="SemiBold" HorizontalAlignment="Right" VerticalAlignment="Center" Foreground="{DynamicResource TextPrimary}"/>
+                                </Grid>
+
+                                <Grid Margin="0,0,0,12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="155"/>
+                                        <ColumnDefinition Width="140"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Label Grid.Column="0" Content="Refresh Rate (Hz)" Target="{Binding ElementName=CboNormalRefresh}" Foreground="{DynamicResource TextPrimary}" VerticalAlignment="Center" Padding="0"/>
+                                    <ComboBox x:Name="CboNormalRefresh" Grid.Column="1" AutomationProperties.Name="Normal Mode Refresh Rate"/>
+                                </Grid>
+
+                                <TextBlock Text="Normal mode applies Windows Balanced Power Mode and keeps all currently open applications running."
+                                           FontSize="12"
+                                           Foreground="{DynamicResource TextMuted}"
+                                           TextWrapping="Wrap"/>
                             </StackPanel>
                         </TabItem>
 
